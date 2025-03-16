@@ -142,7 +142,7 @@ import Synchronization
 
 public final class TaskProviderMock: TaskProvider, Sendable {
 
-    public enum MethodCall: Equatable {
+    public enum MethodCall: Equatable, Sendable {
         case task(priority: TaskPriority?)
         case detachedTask(priority: TaskPriority?)
     }
@@ -252,7 +252,7 @@ class SomethingDoerTests: XCTestCase {
         sut.doSomething()
         await mock.waitForTasks()
         print("about to assert")
-        XCTAssertTrue(sut.somethingHasBeenDone) // test fails
+        XCTAssertTrue(sut.somethingHasBeenDone) // test passes
         print("finished asserting")
     }
 }
@@ -274,11 +274,154 @@ about to assert
 finished asserting
 ```
 
-### Benefits and Drawbacks
+### Strengths and Weaknesses
 
 While the examples in this article only show a single unstructured task being initialised within our `doSomething` method, this mock is able to handle multiple unstructured tasks at a time. In addition, it is compliant with Swift 6's strict concurrency checks.
 
-However, a limitation of this mock is the lack of timeout functionality. The `waitForTasks` method will wait for as long as it takes for the tasks to complete. 
+However, a limitation of this mock is the lack of timeout functionality. The `waitForTasks` method will wait for as long as it takes for the tasks to complete.
 
-## Mutex alternative
+### Suggestions
 
+Passing `nil` instead of the actual priority to the unstructured tasks within our mock can help improve the performance of your tests. Below is an example of how to do that:
+
+```swift
+public final class TaskProviderMock: TaskProvider, Sendable {
+
+    ...
+
+    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async -> Success) -> Task<Success, Never> {
+        log.withLock { $0.append(.task(priority: priority)) }
+        tasksCount.withLock { $0 += 1 }
+
+        // passing `nil` instead of `priority` can improve the performance of tests
+        return Task(priority: nil) { [weak self] in
+            defer { self?.completedTasksCount.withLock { $0 += 1 } }
+            let result = await operation()
+            return result
+        }
+    }
+
+    ...
+}
+```
+
+While this may seem like it would lead to incorrect behaviour, it shouldn't impact the results of our tests as we're only concerned about ensuring the task is finished before reaching our test assertions, not the priority of the task. In addition, if you want to ensure that the tasks in your production code are running with a specific priority, you can assert the value of `log` in your tests as it will contain correct priority.
+
+## Mutex Alternatives
+
+Apple's Mutex isn't supported on all OS versions, so you may want to create your own type which is backwards compatible. I'll provide two alternatives:
+1. recreate the Mutex type
+2. use [Grand Central Dispatch](https://developer.apple.com/documentation/DISPATCH) to synchronise access to integers and arrays
+
+### LegacyMutex
+
+If you cannot use Apple's Mutex, you can create your own:
+
+```swift
+import Foundation
+
+public class LegacyMutex<Value: Sendable>: @unchecked Sendable {
+    private var value: Value
+    private let lock = NSLock()
+
+    public init(_ value: Value) {
+        self.value = value
+    }
+
+    public func withLock<Result>(_ body: (inout sending Value) throws -> Result) rethrows -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&value)
+    }
+}
+```
+
+Then you can simply update the properties in `TaskProviderMock` from `Mutex` to `LegacyMutex`.
+
+### SynchronizedArray and SynchronizedValue
+
+Alternatively, we can use dispatch queues to synchronize access to our `log`, `tasksCount` and `completedTasksCount`.
+
+```swift
+import Foundation
+
+public final class SynchronizedArray<Element>: @unchecked Sendable {
+
+    private var underlyingArray: Array<Element>
+    private let queue = DispatchQueue(label: "com.testable-swift-concurrency.synchronizedArray", attributes: .concurrent)
+
+    public init(_ underlyingArray: Array<Element> = []) {
+        self.underlyingArray = underlyingArray
+    }
+
+    public var content: Array<Element> {
+        get { queue.sync { underlyingArray } }
+        set { queue.sync(flags: .barrier) { underlyingArray = newValue } }
+    }
+
+    public func append(_ element: Element) {
+        queue.sync(flags: .barrier) {
+            underlyingArray.append(element)
+        }
+    }
+}
+
+public final class SynchronizedValue<Value: Sendable>: @unchecked Sendable {
+    private var underlyingValue: Value
+    private let queue = DispatchQueue(label: "com.testable-swift-concurrency.synchronizedValue", attributes: .concurrent)
+
+    public init(_ initialValue: Value) {
+        underlyingValue = initialValue
+    }
+
+    public var value: Value {
+        get { queue.sync { underlyingValue } }
+        set { queue.sync(flags: .barrier) { underlyingValue = newValue } }
+    }
+}
+
+public extension SynchronizedValue where Value == Int {
+    func increment(by amount: Int = 1) {
+        queue.sync(flags: .barrier) {
+            underlyingValue += amount
+        }
+    }
+}
+```
+
+The `TaskProviderMock` will need to be updated to make use of `SynchronizedArray` and `SynchronizedValue` since they are implemented differently to `Mutex` and `LegacyMutex`.
+
+```swift
+public final class TaskProviderMock: TaskProvider, Sendable {
+
+    ...
+
+    public let log = SynchronizedArray<MethodCall>([])
+    private let completedTasksCount = SynchronizedValue(0)
+    private let tasksCount = SynchronizedValue(0)
+
+    ...
+
+    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async -> Success) -> Task<Success, Never> {
+        log.append(.task(priority: priority))
+        tasksCount.increment()
+        return Task(priority: priority) { [weak self] in
+            defer { self?.completedTasksCount.increment() }
+            let result = await operation()
+            return result
+        }
+    }
+
+    ...
+
+    public func waitForTasks() async {
+        while completedTasksCount.value < tasksCount.value { await Task.yield() }
+    }
+}
+```
+
+Here's what's changed between the previous mock and this one:
+- The type for `log` has been changed from `Mutex<[MethodCall]>` to `SynchronizedArray<MethodCall>`
+- The types for `tasksCount` and `completedTasksCount`  have been changed from `Mutex<Int>` to `SynchronizedValue<Int>`
+- The task methods use `append` and `increment` instead of `withLock`
+- The `waitForTasks` method uses `value` to get the count instead of `withLock`
