@@ -6,7 +6,7 @@ Testing code that leverages Swift Concurrency can be challenging, especially whe
 
 In Swift Concurrency, tasks are fundamental units of work that can be executed concurrently. They represent asynchronous operations that can be run in parallel with other tasks. Tasks allow you to create, manage, and execute code concurrently in a structured way.
 
-However, when initialising an unstructured task within a synchronous method, the task will outlive the method. This is because the task is initialised with an escaping closure. Let's consider the following example:
+However, when initializing an unstructured task inside a synchronous method, the task may continue executing even after the method returns. This is because the task is initialized with an escaping closure. Let's consider the following example:
 
 ```swift
 class SomethingDoer {
@@ -49,7 +49,7 @@ class SomethingDoerTests: XCTestCase {
 }
 ```
 
-The synchronous `doSomething()` method initialises a task that mutates the class's internal state. Print statements have been interspersed throughout the `doSomething()` and `test_doSomething()` methods in order to illustrate the order of execution. Below is an example of the order of execution when running the test:
+`doSomething()` is synchronous and initializes a task that mutates the class's internal state. Print statements have been interspersed throughout `doSomething()` and `test_doSomething()` in order to illustrate the order of execution. Below is an example of the order of execution when running the test:
 ```
 about to call synchronous `doSomething` method
 task about to start executing
@@ -62,30 +62,47 @@ state mutated
 task finished executing
 ```
 
-Every time we run the test method, the order of execution could differ from the previous test run. In some cases, the internal state can be mutated before the test begins evaluating the value of the property. Because of the unpredictable order of execution, we get flaky tests.
+Every time we run the test, the order of execution could differ from the previous test run. In some cases, the internal state can be mutated before the test begins evaluating the value of the property. Because of the unpredictable order of execution, we get flaky tests.
 
-The reason behind the unpredictable order of execution between test runs is that the task is initialised with an escapig closure and we have no control over when that closure begins or finishes executing.
+The unpredictable execution order is due to the task being initialized with an escaping closure, meaning we have no control over when it starts or completes.
 
 ### Solution
 
-The next logical step is to ensure the asynchronous operation finishes before we begin evaluating/asserting our state. Once the asynchronous operation has finished, we can evaluate our state deterministically. The remainder of this article will be dedicated to exploring a solution that allows us to achieve that.
+To make our tests reliable, we need to ensure that the asynchronous operation completes before we assert the state. Once the asynchronous operation has finished, we can evaluate our state deterministically. The remainder of this article will be dedicated to exploring a solution that allows us to achieve that.
 
-The solution leverages dependency inversion and abstracts the `Task` type behind a protocol that can be mocked for testing purposes. As such, parts of your code that use unstructured tasks will depend on the protocol. Here is the protocol:
+The solution leverages dependency inversion and abstracts `Task` behind a protocol that can be mocked for testing purposes. As such, parts of your code that use unstructured tasks will depend on the protocol.
+
+Apple's [Task](https://developer.apple.com/documentation/swift/task) type has two main initializers that we're interested in:
+```swift
+@discardableResult
+init(
+    priority: TaskPriority? = nil,
+    operation: sending @escaping @isolated(any) () async -> Success
+)
+
+@discardableResult
+init(
+    priority: TaskPriority? = nil,
+    operation: sending @escaping @isolated(any) () async throws -> Success
+)
+```
+
+We need the members of our protocol to resemble those two initializers. Here is the protocol:
 
 ```swift
 public protocol TaskProvider: Sendable {
 
     @discardableResult
-    func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async -> Success) -> Task<Success, Never>
+    func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async -> Success) -> Task<Success, Never>
 
     @discardableResult
-    func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async throws -> Success) -> Task<Success, Error>
+    func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async throws -> Success) -> Task<Success, Error>
 
     @discardableResult
-    func detachedTask<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async -> Success) -> Task<Success, Never>
+    func detachedTask<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async -> Success) -> Task<Success, Never>
 
     @discardableResult
-    func detachedTask<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async throws -> Success) -> Task<Success, Error>
+    func detachedTask<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async throws -> Success) -> Task<Success, Error>
 }
 ```
 
@@ -104,38 +121,38 @@ struct TaskProviderImpl: TaskProvider {
     public init() {}
 
     @discardableResult
-    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async -> Success) -> Task<Success, Never> {
+    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async -> Success) -> Task<Success, Never> {
         Task(priority: priority, operation: operation)
     }
 
     @discardableResult
-    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async throws -> Success) -> Task<Success, Error> {
+    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async throws -> Success) -> Task<Success, Error> {
         Task(priority: priority, operation: operation)
     }
 
     @discardableResult
-    public func detachedTask<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async -> Success) -> Task<Success, Never> {
+    public func detachedTask<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async -> Success) -> Task<Success, Never> {
         Task.detached(priority: priority, operation: operation)
     }
 
     @discardableResult
-    public func detachedTask<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async throws -> Success) -> Task<Success, Error> {
+    public func detachedTask<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async throws -> Success) -> Task<Success, Error> {
         Task.detached(priority: priority, operation: operation)
     }
 }
 ```
 
-Each method initialises and returns the appropriate/corresponding task to the caller of the method. In other words, rather than initialising an unstructured task ourselves, we can call the methods instead.
+Each method initializes and returns a corresponding Task instance, encapsulating the asynchronous operation. In other words, rather than initializing an unstructured task ourselves, we can call the methods instead.
 
 #### Mock implementation
 
-The mock implementation is slightly more complex than the production implementation. This is because the mock has two main objectives:
-1. to keep track of both the number of unstructured tasks that have been initialised and finished executing
-2. to wait until all of the created tasks have finished executing
+The mock implementation is slightly more complex than the production implementation. This is because the mock must:
+1. keep track of both the number of unstructured tasks that have been initialized and finished executing
+2. wait until all of the created tasks have finished executing
 
-To achieve the first objective, we create properties that store the number of initialised and completed tasks as integers. The values of these properties will be incremented accordingly.
+To achieve the first objective, we create properties that store the number of initialized and completed tasks as integers. The values of these properties will be incremented accordingly.
 
-For the second objective, we compare the number of initialised tasks to the number of completed tasks. If the number of intialised tasks is greater than the number completed tasks, that means there is at least one task in progress. Once those two numbers are equal, all tasks have completed and we no longer need to wait.
+For the second objective, we compare the number of initialized tasks to the number of completed tasks. If the number of initialized tasks is greater than the number completed tasks, that means there is at least one task in progress. Once those two numbers are equal, all tasks have completed and we no longer need to wait.
 
 ```swift
 import Synchronization
@@ -153,7 +170,7 @@ public final class TaskProviderMock: TaskProvider, Sendable {
 
     public init() {}
 
-    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async -> Success) -> Task<Success, Never> {
+    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async -> Success) -> Task<Success, Never> {
         log.withLock { $0.append(.task(priority: priority)) }
         tasksCount.withLock { $0 += 1 }
         return Task(priority: priority) { [weak self] in
@@ -163,7 +180,7 @@ public final class TaskProviderMock: TaskProvider, Sendable {
         }
     }
 
-    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async throws -> Success) -> Task<Success, Error> {
+    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async throws -> Success) -> Task<Success, Error> {
         log.withLock { $0.append(.task(priority: priority)) }
         tasksCount.withLock { $0 += 1 }
         return Task(priority: priority) { [weak self] in
@@ -177,7 +194,7 @@ public final class TaskProviderMock: TaskProvider, Sendable {
         }
     }
 
-    public func detachedTask<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async -> Success) -> Task<Success, Never> {
+    public func detachedTask<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async -> Success) -> Task<Success, Never> {
         log.withLock { $0.append(.detachedTask(priority: priority)) }
         tasksCount.withLock { $0 += 1 }
         return Task.detached(priority: priority) { [weak self] in
@@ -187,7 +204,7 @@ public final class TaskProviderMock: TaskProvider, Sendable {
         }
     }
 
-    public func detachedTask<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async throws -> Success) -> Task<Success, Error> {
+    public func detachedTask<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async throws -> Success) -> Task<Success, Error> {
         log.withLock { $0.append(.detachedTask(priority: priority)) }
         tasksCount.withLock { $0 += 1 }
         return Task.detached(priority: priority) { [weak self] in
@@ -202,22 +219,23 @@ public final class TaskProviderMock: TaskProvider, Sendable {
     }
 
     public func waitForTasks() async {
+        // Wait until all tasks have completed before proceeding.
         while completedTasksCount.withLock({ $0 }) < tasksCount.withLock({ $0 }) { await Task.yield() }
     }
 }
 ```
 
-The [Mutex](https://developer.apple.com/documentation/synchronization/mutex) type allows us to update our mock's state safely from multiple threads. However, it's not available on all OS versions. I've provided a backwards-compatible alternative to `Mutex` at the end of this article.
+Apple's [Mutex](https://developer.apple.com/documentation/synchronization/mutex) allows us to update our mock's state safely from multiple threads. However, it's not available on all OS versions. I've provided a backwards-compatible alternative to `Mutex` at the end of this article.
 
 Here's a summary of what each task method does:
-1. A method call enum case corresponding to the task method is appended to the log to help verify the correct method is being called in testing
+1. A `MethodCall` enum case corresponding to the task method is appended to the log to help verify the correct method is being called in testing
 2. The number of tasks is incremented by 1 as a new task is about to be created to perform the asynchronous work submitted by our subject under test
 3. The task is created and the asynchronous operation is executed within the task
 4. Once the asynchronous operation is finished, we increment the number of completed tasks by one
 
 #### Example usage
 
-When writing asynchronous code, we declare a dependency on the `TaskProvider` protocol and await our asynchronous operations within a closure that we provide as an argument to the task method's `operation` parameter. Let's revisit our earlier example with the `SomethingDoer` class to see it in practice.
+When writing asynchronous code, we declare a dependency on the `TaskProvider` protocol and await our asynchronous operations within a closure that we provide as an argument to the task method's `operation` parameter. Let's revisit our earlier example with `SomethingDoer` to see it in practice.
 
 ```swift
 class SomethingDoer {
@@ -253,14 +271,15 @@ class SomethingDoerTests: XCTestCase {
         await mock.waitForTasks()
         print("about to assert")
         XCTAssertTrue(sut.somethingHasBeenDone) // test passes
+        XCTAssertEqual(mock.log, [.task(priority: .background)])
         print("finished asserting")
     }
 }
 ```
 
-We inject `TaskProvider` and `TaskProviderMock` into our production and test instances of `SomethingDoer` respectively. This allows us to use Swift Concurrency as normal in our production code whilst ensuring that our asynchronous operations are finished before we begin our assertions within our tests.
+We inject instances of `TaskProviderImpl` and `TaskProviderMock` into our production and test instances of `SomethingDoer` respectively. This allows us to use Swift Concurrency as normal in our production code whilst ensuring that our asynchronous operations are finished before we begin our assertions within our tests.
 
-After calling the `doSomething()` method in our test, we call the `waitUntilTasks()` method which prevents the test from progressing until our asynchronous operations are finished, thus providing reliable and deterministic test results. Here is the order of execution with this approach:
+After calling `doSomething()` in our test, we call `waitUntilTasks()` which prevents the test from progressing until our asynchronous operations are finished, thus providing reliable and deterministic test results. Here is the order of execution with this approach:
 
 ```
 about to call synchronous `doSomething` method
@@ -276,20 +295,20 @@ finished asserting
 
 ### Strengths and Weaknesses
 
-While the examples in this article only show a single unstructured task being initialised within our `doSomething` method, this mock is able to handle multiple unstructured tasks at a time. In addition, it is compliant with Swift 6's strict concurrency checks.
+While the examples in this article only show a single unstructured task being initialized within `doSomething()`, this mock is able to handle multiple unstructured tasks at a time. In addition, it is compliant with Swift 6's strict concurrency checks.
 
-However, a limitation of this mock is the lack of timeout functionality. The `waitForTasks` method will wait for as long as it takes for the tasks to complete.
+However, one limitation of this approach is the lack of a timeout mechanism, meaning `waitForTasks()` could hang indefinitely if a task never completes. In other words, `waitForTasks()` will wait for as long as it takes for the tasks to complete.
 
 ### Suggestions
 
-Passing `nil` instead of the actual priority to the unstructured tasks within our mock can help improve the performance of your tests. Below is an example of how to do that:
+Passing `nil` instead of the actual priority to the unstructured tasks within the mock can help improve the performance of the tests. Below is an example of how to do that:
 
 ```swift
 public final class TaskProviderMock: TaskProvider, Sendable {
 
     ...
 
-    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async -> Success) -> Task<Success, Never> {
+    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async -> Success) -> Task<Success, Never> {
         log.withLock { $0.append(.task(priority: priority)) }
         tasksCount.withLock { $0 += 1 }
 
@@ -305,13 +324,13 @@ public final class TaskProviderMock: TaskProvider, Sendable {
 }
 ```
 
-While this may seem like it would lead to incorrect behaviour, it shouldn't impact the results of our tests as we're only concerned about ensuring the task is finished before reaching our test assertions, not the priority of the task. In addition, if you want to ensure that the tasks in your production code are running with a specific priority, you can assert the value of `log` in your tests as it will contain correct priority.
+While this may seem like it would lead to incorrect behavior, it shouldn't impact the results of our tests as we're only concerned about ensuring the task is finished before reaching our test assertions, not the priority of the task. In addition, if you want to ensure that the tasks in your production code are running with a specific priority, you can assert the value of `log` in your tests as it will contain correct priority.
 
 ## Mutex Alternatives
 
 Apple's Mutex isn't supported on all OS versions, so you may want to create your own type which is backwards compatible. I'll provide two alternatives:
 1. recreate the Mutex type
-2. use [Grand Central Dispatch](https://developer.apple.com/documentation/DISPATCH) to synchronise access to integers and arrays
+2. use [Grand Central Dispatch](https://developer.apple.com/documentation/DISPATCH) to synchronize access to integers and arrays
 
 ### LegacyMutex
 
@@ -337,6 +356,8 @@ public class LegacyMutex<Value: Sendable>: @unchecked Sendable {
 ```
 
 Then you can simply update the properties in `TaskProviderMock` from `Mutex` to `LegacyMutex`.
+
+Note: `NSLock` provides basic thread safety but does not support fairness mechanisms like `Mutex`.
 
 ### SynchronizedArray and SynchronizedValue
 
@@ -402,7 +423,7 @@ public final class TaskProviderMock: TaskProvider, Sendable {
 
     ...
 
-    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping () async -> Success) -> Task<Success, Never> {
+    public func task<Success: Sendable>(priority: TaskPriority?, operation: sending @escaping @isolated(any) () async -> Success) -> Task<Success, Never> {
         log.append(.task(priority: priority))
         tasksCount.increment()
         return Task(priority: priority) { [weak self] in
@@ -424,4 +445,4 @@ Here's what's changed between the previous mock and this one:
 - The type for `log` has been changed from `Mutex<[MethodCall]>` to `SynchronizedArray<MethodCall>`
 - The types for `tasksCount` and `completedTasksCount`  have been changed from `Mutex<Int>` to `SynchronizedValue<Int>`
 - The task methods use `append` and `increment` instead of `withLock`
-- The `waitForTasks` method uses `value` to get the count instead of `withLock`
+- `waitForTasks()` uses `value` to get the count instead of `withLock`
