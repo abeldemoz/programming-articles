@@ -1,6 +1,6 @@
 # Deterministic Testing in Swift Concurrency
 
-Testing code that leverages Swift Concurrency can be challenging, especially when dealing with unstructured tasks. These tasks execute asynchronously, making the order of execution, and thus test results, unpredictable. In this article, we explore how dependency inversion and a custom TaskProvider abstraction can help control asynchronous execution, ensuring reliable and deterministic tests. We provide a concrete implementation, a test-friendly mock, and a structured approach to making Swift Concurrency testable.
+Testing code that leverages Swift Concurrency can be challenging, especially when dealing with unstructured tasks. These tasks execute asynchronously, making the order of execution, and thus test results, unpredictable. In this article, we explore how dependency inversion and a custom TaskProvider abstraction can help control asynchronous execution, ensuring reliable and deterministic tests.
 
 ## Problem
 
