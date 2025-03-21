@@ -1,4 +1,6 @@
-# Deterministic Testing in Swift Concurrency
+# Deterministic Unit Tests in Swift Concurrency
+
+## Introduction
 
 Testing code that leverages Swift Concurrency can be challenging, especially when dealing with unstructured tasks. These tasks execute asynchronously, making the order of execution, and thus test results, unpredictable. In this article, we explore how dependency inversion and a custom TaskProvider abstraction can help control asynchronous execution, ensuring reliable and deterministic tests.
 
@@ -62,7 +64,7 @@ state mutated
 task finished executing
 ```
 
-Every time we run the test, the order of execution could differ from the previous test run. In some cases, the internal state can be mutated before the test begins evaluating the value of the property. Because of the unpredictable order of execution, we get flaky tests.
+Every time we run the test, the order of execution could differ from the previous test run. In the case above, the task starts executing after we assert our state. In other cases, the internal state can be mutated before the test begins evaluating the value of the property. Because of the unpredictable order of execution, we get flaky tests.
 
 The unpredictable execution order is due to the task being initialized with an escaping closure, meaning we have no control over when it starts or completes.
 
