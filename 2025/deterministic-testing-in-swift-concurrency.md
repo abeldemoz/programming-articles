@@ -68,7 +68,7 @@ Every time we run the test, the order of execution could differ from the previou
 
 The unpredictable execution order is due to the task being initialized with an escaping closure, meaning we have no control over when it starts or completes.
 
-### Solution
+## Solution
 
 To make our tests reliable, we need to ensure that the asynchronous operation completes before we assert the state. Once the asynchronous operation has finished, we can evaluate our state deterministically. The remainder of this article will be dedicated to exploring a solution that allows us to achieve that.
 
@@ -114,7 +114,7 @@ This protocol will have two implementations:
 
 The production implementation is trivial, so we'll take a look at that first.
 
-#### Production implementation
+### Production implementation
 
 
 ```swift
@@ -146,7 +146,7 @@ struct TaskProviderImpl: TaskProvider {
 
 Each method initializes and returns a corresponding Task instance, encapsulating the asynchronous operation. In other words, rather than initializing an unstructured task ourselves, we can call the methods instead.
 
-#### Mock implementation
+### Mock implementation
 
 The mock implementation is slightly more complex than the production implementation. This is because the mock must:
 1. keep track of both the number of unstructured tasks that have been initialized and finished executing
@@ -235,7 +235,7 @@ Here's a summary of what each task method does:
 3. The task is created and the asynchronous operation is executed within the task
 4. Once the asynchronous operation is finished, we increment the number of completed tasks by one
 
-#### Example usage
+### Example usage
 
 When writing asynchronous code, we declare a dependency on the `TaskProvider` protocol and await our asynchronous operations within a closure that we provide as an argument to the task method's `operation` parameter. Let's revisit our earlier example with `SomethingDoer` to see it in practice.
 
@@ -295,13 +295,13 @@ about to assert
 finished asserting
 ```
 
-### Strengths and Weaknesses
+## Strengths and Weaknesses
 
 While the examples in this article only show a single unstructured task being initialized within `doSomething()`, this mock is able to handle multiple unstructured tasks at a time. In addition, it is compliant with Swift 6's strict concurrency checks.
 
 However, one limitation of this approach is the lack of a timeout mechanism, meaning `waitForTasks()` could hang indefinitely if a task never completes. In other words, `waitForTasks()` will wait for as long as it takes for the tasks to complete.
 
-### Suggestions
+## Suggestions
 
 Passing `nil` instead of the actual priority to the unstructured tasks within the mock can help improve the performance of the tests. Below is an example of how to do that:
 
@@ -327,6 +327,10 @@ public final class TaskProviderMock: TaskProvider, Sendable {
 ```
 
 While this may seem like it would lead to incorrect behavior, it shouldn't impact the results of our tests as we're only concerned about ensuring the task is finished before reaching our test assertions, not the priority of the task. In addition, if you want to ensure that the tasks in your production code are running with a specific priority, you can assert the value of `log` in your tests as it will contain correct priority.
+
+## Open Source
+
+All of this is open source and available as a [public repository](https://github.com/abeldemoz/TaskProvider) on my [GitHub page](https://github.com/abeldemoz) under the MIT License.
 
 ## Mutex Alternatives
 
