@@ -11,15 +11,18 @@ In Swift Concurrency, tasks are fundamental units of work that can be executed c
 However, when initializing an unstructured task inside a synchronous method, the task may continue executing even after the method returns. This is because the task is initialized with an escaping closure. Let's consider the following example:
 
 ```swift
-class SomethingDoer {
+import Synchronization
+import XCTest
 
-    var somethingHasBeenDone = false
+final class SomethingDoer: Sendable {
+    
+    let somethingHasBeenDone = Mutex(false)
 
     init() {}
 
     func doSomething() {
 
-        guard !somethingHasBeenDone else {
+        guard !somethingHasBeenDone.withLock({ $0 }) else {
             return
         }
 
@@ -34,7 +37,7 @@ class SomethingDoer {
 
     func mutateState() async {
         print("state about to be mutated")
-        somethingHasBeenDone = true
+        somethingHasBeenDone.withLock { $0 = true }
         print("state mutated")
     }
 }
@@ -45,11 +48,13 @@ class SomethingDoerTests: XCTestCase {
         print("about to call synchronous `doSomething` method")
         sut.doSomething()
         print("about to assert")
-        XCTAssertTrue(sut.somethingHasBeenDone) // test fails
+        XCTAssertTrue(sut.somethingHasBeenDone.withLock({ $0 })) // test fails
         print("finished asserting")
     }
 }
 ```
+
+Apple's [Mutex](https://developer.apple.com/documentation/synchronization/mutex) allows us to access and update values safely from multiple threads. However, it's not available on all OS versions. I've provided a backwards-compatible alternative to `Mutex` at the end of this article.
 
 `doSomething()` is synchronous and initializes a task that mutates the class's internal state. Print statements have been interspersed throughout `doSomething()` and `test_doSomething()` in order to illustrate the order of execution. Below is an example of the order of execution when running the test:
 ```
@@ -227,8 +232,6 @@ public final class TaskProviderMock: TaskProvider, Sendable {
 }
 ```
 
-Apple's [Mutex](https://developer.apple.com/documentation/synchronization/mutex) allows us to update our mock's state safely from multiple threads. However, it's not available on all OS versions. I've provided a backwards-compatible alternative to `Mutex` at the end of this article.
-
 Here's a summary of what each task method does:
 1. A `MethodCall` enum case corresponding to the task method is appended to the log to help verify the correct method is being called in testing
 2. The number of tasks is incremented by 1 as a new task is about to be created to perform the asynchronous work submitted by our subject under test
@@ -240,9 +243,9 @@ Here's a summary of what each task method does:
 When writing asynchronous code, we declare a dependency on the `TaskProvider` protocol and await our asynchronous operations within a closure that we provide as an argument to the task method's `operation` parameter. Let's revisit our earlier example with `SomethingDoer` to see it in practice.
 
 ```swift
-class SomethingDoer {
+final class SomethingDoer: Sendable {
 
-    var somethingHasBeenDone = false
+    let somethingHasBeenDone = Mutex(false)
 
     private let taskProvider: TaskProvider
 
@@ -272,8 +275,8 @@ class SomethingDoerTests: XCTestCase {
         sut.doSomething()
         await mock.waitForTasks()
         print("about to assert")
-        XCTAssertTrue(sut.somethingHasBeenDone) // test passes
-        XCTAssertEqual(mock.log, [.task(priority: .background)])
+        XCTAssertTrue(sut.somethingHasBeenDone.withLock { $0 }) // test passes
+        XCTAssertEqual(mock.log.withLock({ $0 }), [.task(priority: .background)])
         print("finished asserting")
     }
 }
