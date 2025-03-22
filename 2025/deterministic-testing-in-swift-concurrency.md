@@ -11,9 +11,6 @@ In Swift Concurrency, tasks are fundamental units of work that can be executed c
 However, when initializing an unstructured task inside a synchronous method, the task may continue executing even after the method returns. This is because the task is initialized with an escaping closure. Let's consider the following example:
 
 ```swift
-import Synchronization
-import XCTest
-
 final class SomethingDoer: Sendable {
     
     let somethingHasBeenDone = Mutex(false)
@@ -162,8 +159,6 @@ To achieve the first objective, we create properties that store the number of in
 For the second objective, we compare the number of initialized tasks to the number of completed tasks. If the number of initialized tasks is greater than the number completed tasks, that means there is at least one task in progress. Once those two numbers are equal, all tasks have completed and we no longer need to wait.
 
 ```swift
-import Synchronization
-
 public final class TaskProviderMock: TaskProvider, Sendable {
 
     public enum MethodCall: Equatable, Sendable {
@@ -346,8 +341,6 @@ Apple's Mutex isn't supported on all OS versions, so you may want to create your
 If you cannot use Apple's Mutex, you can create your own:
 
 ```swift
-import Foundation
-
 public class LegacyMutex<Value: Sendable>: @unchecked Sendable {
     private var value: Value
     private let lock = NSLock()
@@ -373,8 +366,6 @@ Note: `NSLock` provides basic thread safety but does not support fairness mechan
 Alternatively, we can use dispatch queues to synchronize access to our `log`, `tasksCount` and `completedTasksCount`.
 
 ```swift
-import Foundation
-
 public final class SynchronizedArray<Element>: @unchecked Sendable {
 
     private var underlyingArray: Array<Element>
